@@ -1,0 +1,137 @@
+---
+title: "IRIS"
+output:
+  html_notebook:
+    highlight: tango
+    theme: united
+  html_document:
+    df_print: paged
+---
+
+### Load Packages
+```{r}
+packages <- c("hydroGOF", "miscTools", "MASS", "caret", "earth", "pls", "MASS", "plyr", "miscTools", "gridExtra", "ggplot2", "reshape2", "randomForest", "dplyr", "Boruta", "stringr", "ggthemes", "ReporteRs", "stringr", "lubridate", "corrplot", "tibble", "GGally", "e1071", "tensorflow", "keras")
+
+sapply(packages, function(x)require(x, character.only = TRUE, quietly = TRUE))
+rm(packages)
+```
+
+### Pre-processing
+```{r}
+data(iris)
+df <- na.omit(iris)
+iris <- NULL
+rm(iris)
+
+paste("No. of observations:", nrow(df))
+paste("No. of variables:", ncol(df))
+summary(df)
+str(df)
+sapply(df, class)
+
+sd_data <- sapply(df[,-ncol(df)], sd, na.rm = TRUE)
+df[,-ncol(df)] <- df[,which(sd_data != 0)]
+output <- "Species"
+```
+
+### Feature Selection
+```{r}
+set.seed(123)
+borutaTrain <- Boruta(Species~., data = df, doTrace = 0, maxRuns = 200, getImp = getImpLegacyRfZ, ntree = 500)
+borutaResults <- attStats(borutaTrain)
+borutaResults <- borutaResults %>%
+    rownames_to_column %>%
+    arrange(desc(normHits), desc(medianImp)) 
+borutaResults[which(sapply(borutaResults, class) == "numeric")] <- round(borutaResults[which(sapply(borutaResults, class) == "numeric")], 2)
+inputNames <- getSelectedAttributes(borutaTrain, withTentative = FALSE)
+df1 <- df[,c(inputNames, output)] %>% na.omit()
+colnames(df1)[ncol(df1)] <- "y"
+
+print("Selected Features ordered by Importance")
+borutaResults
+```
+
+## Modelling
+### SVM
+```{r}
+set.seed(100)
+index <- createDataPartition(df1$y, p = 0.80, list = FALSE)
+trainDF <- df1[index,]
+testDF <- df1[-index,]
+```
+
+```{r, fig.height=4, fig.width=7}
+ggpairs(df1)
+```
+
+```{r}
+#SVM
+svm1 <- svm(y~., data=trainDF, 
+          method="C-classification", kernal="radial", 
+          gamma=0.1, cost=1)
+summary(svm1)
+```
+```{r}
+plot(svm1, trainDF, Petal.Width ~ Petal.Length,
+          slice=list(Sepal.Width=3, Sepal.Length=4))
+```
+
+```{r}
+trainPrediction <- predict(svm1, trainDF)
+training <- confusionMatrix(trainDF$y, trainPrediction)
+
+testPrediction <- predict(svm1, testDF)
+testing <- confusionMatrix(testDF$y, testPrediction)
+training
+testing
+```
+### Tuning SVM using Grid Search
+```{r}
+obj <- tune(svm, y~., data = trainDF, 
+            ranges = list(gamma = 2^(-2:1), cost = 2^(-2:1)),
+            tunecontrol = tune.control(sampling = "fix")
+)
+plot(obj)
+summary(obj)
+```
+```{r}
+svm2 <- svm(y~., data=trainDF, 
+          method="C-classification", kernal="radial", 
+          gamma=0.25, cost=0.25)
+summary(svm2)
+```
+```{r}
+trainPredictionTuned <- predict(svm2, trainDF)
+trainingTuned <- confusionMatrix(trainDF$y, trainPredictionTuned)
+
+testPredictionTuned <- predict(svm2, testDF)
+testingTuned <- confusionMatrix(testDF$y, testPredictionTuned)
+trainingTuned
+testingTuned
+```
+### randomForest
+```{r}
+rf <- randomForest(y~., data = trainDF, maxnodes = 3, mtry = 4)
+trainingRF <- predict(rf, trainDF)
+confusionMatrix(trainingRF, trainDF$y)
+
+testingRF <- predict(rf, testDF)
+confusionMatrix(testingRF, testDF$y)
+```
+### Linear Discriminant Analysis
+
+Our last model will be the model to explain which Ronald Fisher originally used the Iris dataset. More information about this algorithm can be obtained here.
+
+Linear Discriminant Analysis model is generally used for small data sets which would otherwise suffer from small sample bias in other models. Other classes of models might not be able to pick the trends in the data correctly, so for smaller datasets, a probability based classifier such as bayesian classifiers and lda are more suitable
+
+Linear Discriminant Analysis (LDA) is also most commonly used as dimensionality reduction technique in the pre-processing step for pattern-classification and machine learning applications. The goal is to project a dataset onto a lower-dimensional space with good class-separability in order avoid overfitting (“curse of dimensionality”) and also reduce computational costs. A good discussion of this (although in Python) can be found here
+
+To use this model on our dataset we can go back to using the CARET package
+```{r}
+set.seed(100)
+
+LDA <- train(trainDF[,-ncol(trainDF)],y = trainDF$y, method = "lda", metric = "Accuracy")
+testingLDA <- predict(LDA, testDF)
+confusionMatrix(testDF$y, testingLDA)
+```
+
